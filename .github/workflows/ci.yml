@@ -23,7 +23,12 @@ jobs:
       - run: python -m pip install pyserial==3.5
       - run: npm ci
       - run: npm test
-      - run: python -m unittest discover -s test -p 'test_*.py'
+      - name: Python backend tests
+        run: python -m unittest test.test_backend test.test_backend_lifecycle
+      - name: Python offline protocol tests
+        run: python -m unittest test.test_offline_protocol
+      - name: Python programming contract tests
+        run: python -m unittest test.test_programming_contract
       - run: python -m py_compile python/backend.py python/probe_core.py
 
   package:
