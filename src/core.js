@@ -98,6 +98,54 @@ function inspectHex(buffer) {
   if (!eof || !memory.size) throw new Error('HEX 缺少 EOF 或程序数据。');
   const addresses = [...memory.keys()].sort((a,b) => a-b);
   const min = addresses[0], max = addresses.at(-1);
-  return { bytes: memory.size, min, max, holes: max-min+1-memory.size, banks: [...new Set(addresses.map(a => Math.floor(a/65536)))], counts, sha256: crypto.createHash('sha256').update(buffer).digest('hex'), flashEnabled: false };
+  const blocks = [];
+  let start = addresses[0]; let data = [];
+  for (const address of addresses) {
+    if (data.length && (address !== start + data.length || data.length === 64)) {
+      blocks.push({ address: start, bytes: data.length, sha256: crypto.createHash('sha256').update(Buffer.from(data)).digest('hex') });
+      start = address; data = [];
+    }
+    data.push(memory.get(address));
+  }
+  if (data.length) blocks.push({ address: start, bytes: data.length, sha256: crypto.createHash('sha256').update(Buffer.from(data)).digest('hex') });
+  return { bytes: memory.size, min, max, holes: max-min+1-memory.size, banks: [...new Set(addresses.map(a => Math.floor(a/65536)))], counts, blocks, stc32AddressCheck: inspectStc32Addresses(addresses), sha256: crypto.createHash('sha256').update(buffer).digest('hex'), flashEnabled: false };
 }
-module.exports = { FLASH_BLOCK_REASON, decode, parseProject, buildArgs, parseDiagnostics, buildSucceeded, inspectHex };
+function inspectStc32Addresses(addresses) {
+  const code = addresses.filter(address => address >= 0xFF0000 && address <= 0xFFFFFF);
+  const eeprom = addresses.filter(address => address >= 0xFE0000 && address < 0xFF0000);
+  const outside = addresses.filter(address => address < 0xFE0000 || address > 0xFFFFFF);
+  return {
+    safe: outside.length === 0,
+    codeBytes: code.length,
+    eepromBytes: eeprom.length,
+    outsideBytes: outside.length,
+    warning: eeprom.length ? 'HEX 包含 FE:xxxx 区域；这可能是 EEPROM，当前不会写入。' : null,
+  };
+}
+function flashSafetyChecklist({ device = null, hex = null, port = '', allowEepromErase = false, allowHardwareOptions = false } = {}) {
+  const checks = [
+    { id: 'chip', label: '芯片已识别为 STC32G12K128', passed: device?.model === 'STC32G12K128' && device?.model_magic === '0xF7E3' },
+    { id: 'port', label: '已选择串口', passed: typeof port === 'string' && port.length > 0 },
+    { id: 'hex', label: 'HEX 已通过格式与校验和检查', passed: Boolean(hex?.path && hex?.bytes > 0 && hex?.flashEnabled === false) },
+    { id: 'address', label: 'HEX 地址位于 STC32 受支持范围', passed: hex?.stc32AddressCheck?.safe === true },
+    { id: 'options', label: allowHardwareOptions ? '允许写入硬件选项（方案 B）' : '硬件选项保持不变', passed: false, manual: true },
+    { id: 'eeprom', label: allowEepromErase ? '允许擦除 EEPROM（方案 B）' : 'EEPROM 保持不擦除', passed: false, manual: true },
+    { id: 'verify', label: '写入后回读校验协议已验证', passed: false, manual: true },
+  ];
+  return { checks, ready: checks.every(check => check.passed), writeEnabled: false };
+}
+function simulateFlash(hex) {
+  if (!hex || !Array.isArray(hex.blocks) || !hex.blocks.length) throw new Error('没有可模拟的 HEX 分块');
+  return {
+    hardwareAccessed: false,
+    writeEnabled: false,
+    steps: [
+      { name: '检查芯片型号', result: '模拟通过' },
+      { name: '建立握手', result: '模拟通过（无串口）' },
+      ...hex.blocks.map((block, index) => ({ name: `准备分块 ${index + 1}`, result: `地址 0x${block.address.toString(16).toUpperCase()}，${block.bytes} 字节` })),
+      { name: '模拟 ACK 与回读校验', result: '模拟通过（无设备响应）' },
+      { name: '结束并释放', result: '模拟完成' },
+    ],
+  };
+}
+module.exports = { FLASH_BLOCK_REASON, decode, parseProject, buildArgs, parseDiagnostics, buildSucceeded, inspectHex, inspectStc32Addresses, flashSafetyChecklist, simulateFlash };

@@ -56,7 +56,9 @@ test('HEX retains FF0000 addresses and counts holes', () => {
   const info = c.inspectHex(hex([record(4,0,[0,255]), record(0,0,[1,2]), record(0,4,[3]), eof]));
   assert.equal(info.min, 0xff0000); assert.equal(info.max, 0xff0004);
   assert.equal(info.bytes, 3); assert.equal(info.holes, 2);
-  assert.deepEqual(info.banks,[255]); assert.equal(info.flashEnabled,false);
+  assert.deepEqual(info.banks,[255]); assert.equal(info.blocks.length, 2);
+  assert.equal(info.blocks[0].address, 0xff0000); assert.equal(info.blocks[0].bytes, 2);
+  assert.equal(info.flashEnabled,false);
 });
 test('HEX does not alias identical offsets in different banks', () => {
   const info = c.inspectHex(hex([record(4,0,[0,254]),record(0,0,[1]),record(4,0,[0,255]),record(0,0,[2]),eof]));
@@ -65,6 +67,12 @@ test('HEX does not alias identical offsets in different banks', () => {
 test('HEX segment addresses and start addresses', () => {
   const info = c.inspectHex(hex([record(2,0,[0x10,0]),record(0,2,[3]),record(3,0,[0,0,0,0]),record(5,0,[0,0,0,0]),eof]));
   assert.equal(info.min,0x10002);
+});
+test('STC32 address check separates code, EEPROM and outside data', () => {
+  const safe = c.inspectStc32Addresses([0xFE0000, 0xFF0000, 0xFFFFFF]);
+  assert.equal(safe.safe, true); assert.equal(safe.eepromBytes, 1); assert.equal(safe.codeBytes, 2);
+  const unsafe = c.inspectStc32Addresses([0x10000, 0xFF0000]);
+  assert.equal(unsafe.safe, false); assert.equal(unsafe.outsideBytes, 1);
 });
 test('HEX rejects checksum, length, overlap, missing EOF, bad record and crossing', () => {
   const cases = [
@@ -80,3 +88,21 @@ test('HEX rejects high-bit bytes and oversized files', () => {
   assert.throws(() => c.inspectHex(Buffer.alloc(8*1024*1024+1)), /过大/);
 });
 test('flashing is explicitly blocked', () => assert.match(c.FLASH_BLOCK_REASON, /不包含烧录执行路径/));
+test('safety checklist never enables writing', () => {
+  const report = c.flashSafetyChecklist({ device: { model: 'STC32G12K128', model_magic: '0xF7E3' }, port: 'COM20', hex: { path: 'demo.hex', bytes: 8, flashEnabled: false } });
+  assert.equal(report.writeEnabled, false);
+  assert.equal(report.ready, false);
+  assert.equal(report.checks.find(item => item.id === 'chip').passed, true);
+  assert.equal(report.checks.find(item => item.id === 'options').passed, false);
+});
+test('scheme B remains explicit and does not auto-enable writes', () => {
+  const report = c.flashSafetyChecklist({ allowEepromErase: true, allowHardwareOptions: true });
+  assert.equal(report.writeEnabled, false);
+  assert.match(report.checks.find(item => item.id === 'eeprom').label, /方案 B/);
+  assert.match(report.checks.find(item => item.id === 'options').label, /方案 B/);
+});
+test('offline flash simulation never accesses hardware', () => {
+  const result = c.simulateFlash({ blocks: [{ address: 0xff0000, bytes: 4 }] });
+  assert.equal(result.hardwareAccessed, false); assert.equal(result.writeEnabled, false);
+  assert.match(result.steps.at(-1).result, /模拟完成/);
+});

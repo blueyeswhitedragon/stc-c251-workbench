@@ -1,8 +1,8 @@
 {
   "name": "stc-c251-workbench",
   "displayName": "STC C251 Workbench",
-  "description": "STC32/C251：导入 Keil 工程、编译、HEX 检查与只读芯片识别。MVP 禁止擦写。",
-  "version": "0.1.0",
+  "description": "STC32/C251：导入 Keil 工程、编译、HEX 检查与独立串口烧录。",
+  "version": "0.1.2",
   "publisher": "stc-workbench-local",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/blueyeswhitedragon/stc-c251-workbench.git" },
@@ -20,7 +20,7 @@
   },
   "scripts": {
     "compile": "esbuild src/extension.js --bundle --platform=node --target=node20 --external:vscode --outfile=dist/extension.js",
-    "test": "node --test test/core.test.js test/process.test.js",
+    "test": "node --test test/core.test.js test/process.test.js test/identify-state.test.js test/identify-workflow.test.js",
     "vscode:prepublish": "npm run compile && node scripts/licenses.js",
     "package": "node scripts/package.js"
   },
@@ -34,8 +34,13 @@
       { "command": "stcWorkbench.rebuild", "title": "STC: Rebuild 全部重新编译" },
       { "command": "stcWorkbench.selectPort", "title": "STC: 选择串口" },
       { "command": "stcWorkbench.identify", "title": "STC: 识别芯片（只读）", "icon": "$(circuit-board)" },
+      { "command": "stcWorkbench.showDeviceStatus", "title": "STC: 查看只读芯片状态" },
       { "command": "stcWorkbench.checkHex", "title": "STC: 校验 HEX 文件" },
-      { "command": "stcWorkbench.flash", "title": "STC: 烧录状态（MVP 禁用）" },
+      { "command": "stcWorkbench.previewHexBlocks", "title": "STC: 预览 HEX 分块（离线）" },
+      { "command": "stcWorkbench.simulateFlash", "title": "STC: 模拟烧录流程（离线）" },
+      { "command": "stcWorkbench.flashSafety", "title": "STC: 烧录前安全检查" },
+      { "command": "stcWorkbench.flash", "title": "STC: 直接烧录到开发板", "icon": "$(rocket)" },
+      { "command": "stcWorkbench.openOfficialIsp", "title": "STC: 打开官方 STC-ISP（手动下载）" },
       { "command": "stcWorkbench.setupPython", "title": "STC: 配置芯片识别环境" },
       { "command": "stcWorkbench.configureKeil", "title": "STC: 设置 Keil 路径" },
       { "command": "stcWorkbench.cancel", "title": "STC: 取消当前操作", "icon": "$(debug-stop)" },
@@ -57,7 +62,10 @@
         "stcWorkbench.probePythonPath": { "type": "string", "default": "", "scope": "machine", "description": "可选：已安装 pyserial 和 tqdm 的 Python；留空则使用插件创建的独立环境。" },
         "stcWorkbench.probeTimeout": { "type": "integer", "default": 180, "minimum": 10, "maximum": 300, "description": "等待 RES 的秒数。" },
         "stcWorkbench.buildTimeout": { "type": "integer", "default": 300, "minimum": 30, "maximum": 1800, "description": "编译超时秒数。" },
-        "stcWorkbench.logEncoding": { "type": "string", "enum": ["auto", "utf8", "gbk"], "default": "auto", "description": "Keil 日志编码。auto 优先 UTF-8，遇无效字节时使用 GBK。" }
+        "stcWorkbench.logEncoding": { "type": "string", "enum": ["auto", "utf8", "gbk"], "default": "auto", "description": "Keil 日志编码。auto 优先 UTF-8，遇无效字节时使用 GBK。" },
+        "stcWorkbench.allowEepromErase": { "type": "boolean", "default": false, "description": "保留设置：独立烧录当前始终不擦除用户 EEPROM。" },
+        "stcWorkbench.allowHardwareOptions": { "type": "boolean", "default": false, "description": "保留设置：独立烧录当前始终不修改硬件选项。" }
+        ,"stcWorkbench.officialIspPath": { "type": "string", "default": "", "scope": "machine", "description": "官方 STC-ISP 可执行文件路径。插件只负责启动，不会自动传参或点击下载。" }
       }
     }
   }

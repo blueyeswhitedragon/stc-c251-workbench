@@ -5,6 +5,7 @@ const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const core = require('./core');
 const { launch, CancelledError } = require('./process');
+const { IdentifyState } = require('./identify-state');
 
 let shutdown;
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
@@ -13,14 +14,15 @@ function activate(context) {
   const diagnostics = vscode.languages.createDiagnosticCollection('stc-c251');
   const changed = new vscode.EventEmitter();
   const state = { project: null, target: null, port: context.workspaceState.get('port', ''), device: null, hex: null, busy: '', cancellation: null };
+  const identification = new IdentifyState();
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 45);
   status.command = 'stcWorkbench.build';
   const config = () => vscode.workspace.getConfiguration('stcWorkbench');
   const log = message => output.appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
   const refresh = () => {
-    status.text = state.busy ? `$(sync~spin) STC: ${state.busy}` : `$(circuit-board) STC: ${state.target?.name || '导入工程'}`;
+    status.text = state.busy ? `$(sync~spin) STC: ${state.busy === '只读识别' ? identification.view().label : state.busy}` : `$(circuit-board) STC: ${state.target?.name || '导入工程'}`;
     status.command = state.busy ? 'stcWorkbench.cancel' : state.project ? 'stcWorkbench.build' : 'stcWorkbench.importProject';
-    status.tooltip = 'STC C251 Workbench · 实际擦写禁用'; status.show(); changed.fire();
+    status.tooltip = 'STC C251 Workbench · STC32 独立烧录'; status.show(); changed.fire();
     void vscode.commands.executeCommand('setContext', 'stcWorkbench.busy', Boolean(state.busy));
   };
   const requireTrust = () => {
@@ -103,7 +105,7 @@ function activate(context) {
     if ((await fs.stat(filename)).size > 8 * 1024 * 1024) throw new Error('HEX 文件过大（上限 8 MiB）。');
     const info = core.inspectHex(await fs.readFile(filename));
     state.hex = { path: filename, ...info }; refresh();
-    log(`HEX 校验通过：${filename}\n数据 ${info.bytes} 字节；地址 0x${info.min.toString(16).toUpperCase()}–0x${info.max.toString(16).toUpperCase()}；空洞 ${info.holes} 字节\nSHA-256: ${info.sha256}\n注意：格式校验通过不代表允许烧录。`);
+    log(`HEX 校验通过：${filename}\n数据 ${info.bytes} 字节；地址 0x${info.min.toString(16).toUpperCase()}–0x${info.max.toString(16).toUpperCase()}；空洞 ${info.holes} 字节；离线块 ${info.blocks.length} 个\nSTC32 地址：代码 ${info.stc32AddressCheck.codeBytes} 字节，EEPROM 区 ${info.stc32AddressCheck.eepromBytes} 字节，范围外 ${info.stc32AddressCheck.outsideBytes} 字节${info.stc32AddressCheck.warning ? `\n警告：${info.stc32AddressCheck.warning}` : ''}\nSHA-256: ${info.sha256}\n注意：仅生成离线预览块，不代表允许烧录。`);
     return state.hex;
   }
   async function build(rebuild = false) {
@@ -184,7 +186,10 @@ function activate(context) {
       onStdout: data => consume(decoder.write(data))
     });
     consume(decoder.end());
-    if (result.code !== 0) throw new Error(events.findLast(e => e.event === 'error')?.message || core.decode(result.stderr) || `后端退出码 ${result.code}`);
+    if (result.code !== 0) {
+      const failure = events.findLast(e => e.event === 'error');
+      throw Object.assign(new Error(failure?.message || core.decode(result.stderr) || `后端退出码 ${result.code}`), {code:failure?.code || 'backend_failed'});
+    }
     return events;
   }
   async function setupPython() {
@@ -206,39 +211,59 @@ function activate(context) {
       void vscode.window.showInformationMessage('STC 独立识别环境已配置完成。');
     });
   }
-  async function selectPort() {
+  async function selectPort(requestedPort) {
     requireTrust(); requireIdle();
     const python = await getPython();
-    const events = await operation('扫描串口', token => runBackend(python, ['ports'], token));
+    return operation('选择串口', async token => {
+    const events = await runBackend(python, ['ports'], token);
     const ports = events.find(e => e.event === 'ports')?.ports || [];
     if (!ports.length) throw new Error('没有找到串口，请检查 Type-C 连接和 CH340 驱动。');
     ports.sort((a,b) => Number(!/CH340|CH343/i.test(a.description)) - Number(!/CH340|CH343/i.test(b.description)));
-    const selected = await vscode.window.showQuickPick(ports.map(p => ({ label: p.port, description: p.description, port: p.port })), { title: '选择开发板串口（不会自动选择蓝牙端口）' });
-    if (selected) { state.port = selected.port; state.device = null; await context.workspaceState.update('port', state.port); refresh(); }
+    const selected = typeof requestedPort === 'string'
+      ? ports.find(p => p.port.toLowerCase() === requestedPort.toLowerCase())
+      : await vscode.window.showQuickPick(ports.map(p => ({ label: p.port, description: p.description, port: p.port })), { title: '选择开发板串口（不会自动选择蓝牙端口）' }, token);
+    if (typeof requestedPort === 'string' && !selected) throw new Error('指定串口当前不存在，请重新连接并选择串口。');
+    if (selected && !token.isCancellationRequested) { state.port = selected.port; state.device = null; identification.reset(); await context.workspaceState.update('port', state.port); refresh(); return {port:state.port}; }
+    });
   }
   async function identify() {
     requireTrust(); requireIdle();
     if (!state.port) { await selectPort(); if (!state.port) return; }
-    const python = await getPython();
     return operation('只读识别', async (token, progress) => {
-      await blockOfficialIsp(token); state.device = null; output.show(true); refresh();
+      state.device = null; identification.start(); output.show(true); refresh();
+      const updateProgress = () => { progress.report({message:identification.view().description}); refresh(); };
+      const timer = setInterval(updateProgress, 1000);
+      const cancelled = token.onCancellationRequested(() => { identification.cancel(); updateProgress(); });
+      try {
+      updateProgress();
+      const python = await getPython();
+      await blockOfficialIsp(token);
+      const ports = (await runBackend(python, ['ports'], token)).find(e => e.event === 'ports')?.ports || [];
+      if (!ports.some(p => p.port === state.port)) throw Object.assign(new Error('所选串口已断开或端口号变化，请重新连接并选择串口。'), {code:'port_missing'});
       log(`识别 ${state.port}：仅发送同步和识别报文，不擦除、不写入、不调频。取消后如板子停在下载模式，可再按 RES。`);
       const seconds = config().get('probeTimeout', 180);
       const events = await runBackend(python, ['identify', '--port', state.port, '--seconds', String(seconds)], token, event => {
-        if (event.event === 'waiting') {
-          log(event.message); progress.report({ message: `请现在按一下 RES；最多等待 ${seconds} 秒。` });
-          void vscode.window.showInformationMessage(`STC ${state.port} 已打开，请按一下 RES。`);
-        } else if (event.event === 'log' || event.event === 'error') log(event.message);
+        identification.event(event); updateProgress();
+        if (event.message) log(event.message);
       }, (seconds + 15) * 1000);
       const snapshot = events.find(e => e.event === 'identified')?.snapshot;
       if (!snapshot) throw new Error('后端没有返回有效识别结果。');
-      const folder = path.join(context.globalStorageUri.fsPath, 'captures'); await fs.mkdir(folder, { recursive: true });
-      const file = path.join(folder, `capture-${Date.now()}.json`);
-      await fs.writeFile(file, JSON.stringify(snapshot, null, 2), { encoding: 'utf8', flag: 'wx' });
-      state.device = snapshot; refresh();
-      log(`已识别 ${snapshot.model}，BSL ${snapshot.bsl_version}；串口已释放。原始状态：${file}`);
+      if (identification.released !== true) throw new Error('后端未确认串口释放，不将此次操作标记为成功。');
+      if (token.isCancellationRequested) throw new CancelledError();
+      try {
+        const folder = path.join(context.globalStorageUri.fsPath, 'captures'); await fs.mkdir(folder, { recursive: true });
+        const file = path.join(folder, `capture-${Date.now()}.json`);
+        await fs.writeFile(file, JSON.stringify(snapshot, null, 2), { encoding: 'utf8', flag: 'wx' });
+        log(`原始状态：${file}`);
+      } catch (error) { log(`芯片已识别，但本地记录保存失败：${error.message}`); }
+      state.device = snapshot; identification.success(); refresh();
+      log(`已识别 ${snapshot.model}，BSL ${snapshot.bsl_version}；串口已释放。`);
       void vscode.window.showInformationMessage(`识别成功：${snapshot.model} / ${snapshot.bsl_version}。配置映射仍待核验，未执行烧录。`);
       return snapshot;
+      } catch (error) {
+        if (error.code === 'cancelled') error.message = '识别已取消，后端已退出；未擦写。可重新点击识别，若板子停在下载模式可按 RES。';
+        identification.fail(error); state.device = null; refresh(); throw error;
+      } finally { clearInterval(timer); cancelled.dispose(); }
     });
   }
   async function checkHex(filename) {
@@ -250,11 +275,104 @@ function activate(context) {
     }
     output.show(true); return checkHexFile(filename);
   }
+  async function previewHexBlocks(filename) {
+    requireTrust(); requireIdle();
+    if (!state.hex || (filename && path.resolve(filename) !== path.resolve(state.hex.path))) await checkHex(filename);
+    if (!state.hex) return;
+    const items = state.hex.blocks.map((block, index) => ({
+      label: `块 ${index + 1}: 0x${block.address.toString(16).toUpperCase()}`,
+      description: `${block.bytes} 字节 · SHA-256 ${block.sha256.slice(0, 16)}…`,
+      detail: '离线预览；不会发送到开发板',
+    }));
+    output.show(true);
+    log(`HEX 离线分块预览：${state.hex.path}\n${state.hex.blocks.map((b, i) => `块 ${i + 1}: 地址 0x${b.address.toString(16).toUpperCase()}，${b.bytes} 字节，SHA-256 ${b.sha256}`).join('\n')}\n不会打开串口或执行烧录。`);
+    await vscode.window.showQuickPick(items, { title: 'HEX 离线分块预览（不会烧录）', placeHolder: '选择分块查看校验摘要' });
+    return { path: state.hex.path, blocks: state.hex.blocks, flashEnabled: false };
+  }
+  async function flashSafety() {
+    requireTrust(); requireIdle();
+    const report = core.flashSafetyChecklist({
+      device: state.device, hex: state.hex, port: state.port,
+      allowEepromErase: config().get('allowEepromErase', false),
+      allowHardwareOptions: config().get('allowHardwareOptions', false),
+    });
+    const lines = report.checks.map(check => `${check.manual ? '⚠️' : (check.passed ? '✅' : '❌')} ${check.label}${check.manual ? '（待验证）' : ''}`);
+    output.show(true);
+    log(`烧录前安全检查（仅检查，不执行烧录）：\n${lines.join('\n')}\n当前仍禁止写入：${report.writeEnabled ? '否' : '是'}`);
+    void vscode.window.showInformationMessage(`安全检查完成：${report.checks.filter(check => check.passed).length}/${report.checks.length} 项通过；真实烧录仍未开放。`);
+    return report;
+  }
+  async function showDeviceStatus() {
+    requireTrust(); requireIdle();
+    if (!state.device) {
+      void vscode.window.showInformationMessage('尚未完成只读识别。');
+      return { available: false };
+    }
+    const device = state.device;
+    const lines = [
+      `型号：${device.model} (${device.model_magic})`,
+      `BSL：${device.bsl_version}`,
+      `状态字节：${device.raw_status_payload_bytes ?? '未知'}`,
+      `硬件选项：${device.hardware_options_trust || '未验证'}`,
+      'Flash/EEPROM 写入：未执行',
+    ];
+    output.show(true); log(`只读芯片状态详情：\n${lines.join('\n')}`);
+    void vscode.window.showInformationMessage(`${device.model} / BSL ${device.bsl_version}；硬件选项未验证，未执行烧录。`);
+    return { available: true, ...device, flash_write_performed: false };
+  }
+  async function simulateFlash() {
+    requireTrust(); requireIdle();
+    if (!state.hex) await checkHex();
+    if (!state.hex) return { hardwareAccessed: false, writeEnabled: false, steps: [] };
+    const result = core.simulateFlash(state.hex);
+    output.show(true); log(`离线烧录流程模拟：\n${result.steps.map((step, index) => `${index + 1}. ${step.name}：${step.result}`).join('\n')}\n硬件访问：否；真实写入：禁用。`);
+    void vscode.window.showInformationMessage(`离线流程模拟完成：${result.steps.length} 步；没有访问开发板。`);
+    return result;
+  }
   async function flash() {
-    // Intentionally no subprocess, backend dispatch, bypass setting, or firmware write.
-    log(core.FLASH_BLOCK_REASON);
-    void vscode.window.showWarningMessage(core.FLASH_BLOCK_REASON);
-    return { enabled: false, reason: core.FLASH_BLOCK_REASON };
+    requireTrust(); requireIdle();
+    if (!state.port) { await selectPort(); if (!state.port) return { flashed: false }; }
+    if (!state.hex) await checkHex();
+    if (!state.hex) return { flashed: false };
+    if (state.hex.stc32AddressCheck?.eepromBytes) throw new Error('当前按钮不接受 HEX 中的 EEPROM 数据；请将 EEPROM 数据单独保存。');
+    if (!state.hex.stc32AddressCheck?.safe) throw new Error('HEX 含 STC32 不支持地址，已停止烧录。');
+    const answer = await vscode.window.showWarningMessage(
+      `即将通过 ${state.port} 擦除并写入 STC32G12K128 代码区（${state.hex.bytes} 字节）。EEPROM 和硬件选项不会修改。请确认后按 RES。`,
+      { modal: true }, '开始烧录');
+    if (answer !== '开始烧录') return { flashed: false, cancelled: true };
+    return operation('独立烧录', async (token, progress) => {
+      output.show(true); await blockOfficialIsp(token);
+      const python = await getPython();
+      const ports = (await runBackend(python, ['ports'], token)).find(e => e.event === 'ports')?.ports || [];
+      if (!ports.some(p => p.port.toLowerCase() === state.port.toLowerCase())) throw new Error('所选串口已断开，请重新连接开发板。');
+      const seconds = config().get('probeTimeout', 180);
+      log(`独立烧录 ${state.port}：${state.hex.path}\nSHA-256：${state.hex.sha256}\n仅代码区；EEPROM/硬件选项保持不变。`);
+      const events = await runBackend(python, ['flash', '--port', state.port, '--hex', state.hex.path, '--seconds', String(seconds)], token, event => {
+        if (event.message) log(event.message);
+        if (event.event === 'waiting') progress.report({ message: '请按一下开发板 RES，等待芯片响应…' });
+        if (event.event === 'identified') progress.report({ message: '已识别 STC32G12K128，正在擦除代码区…' });
+        if (event.event === 'writing') progress.report({ message: `正在下载 ${event.total} 字节…` });
+        if (event.event === 'progress' && event.total) progress.report({ increment: Math.min(100, event.done / event.total * 100), message: `正在下载 ${event.done}/${event.total} 字节…` });
+      }, (seconds + 30) * 1000);
+      if (token.isCancellationRequested) throw new CancelledError();
+      const result = events.find(e => e.event === 'flashed');
+      if (!result) throw new Error('后端没有返回烧录成功确认。');
+      state.device = null; identification.reset(); refresh();
+      log(`烧录成功：${result.bytes} 字节，SHA-256 ${result.sha256}；串口已释放。`);
+      void vscode.window.showInformationMessage('STC32G12K128 烧录成功，开发板已复位运行。');
+      return result;
+    });
+  }
+  async function openOfficialIsp() {
+    requireTrust(); requireIdle();
+    const executable = config().get('officialIspPath', '').trim();
+    if (!executable || !await exists(executable)) throw new Error('请先在设置中配置官方 STC-ISP 可执行文件路径。');
+    if (!state.hex) await checkHex();
+    if (!state.hex) return { opened: false };
+    log(`准备打开官方 STC-ISP。HEX：${state.hex.path}\nSHA-256：${state.hex.sha256}\n插件不会自动传参、不会自动点击下载；请在官方窗口核对 COM、EEPROM 和硬件选项。`);
+    const result = await launch(executable, [], { cwd: path.dirname(executable), timeout: 15000 });
+    if (result.code !== 0) throw new Error(`官方 STC-ISP 启动失败（退出码 ${result.code}）。`);
+    return { opened: true, executable, hex: state.hex.path, flashEnabled: false };
   }
   const item = (label, command, description, icon = 'chevron-right') => ({ label, command, description, icon });
   const provider = {
@@ -276,9 +394,15 @@ function activate(context) {
         item('识别环境', 'stcWorkbench.setupPython', '首次使用时配置', 'python'),
         item('串口', 'stcWorkbench.selectPort', state.port || '未选择', 'plug'),
         item('识别芯片', 'stcWorkbench.identify', '只读 · 按 RES', 'circuit-board'),
-        ...(state.device ? [item(state.device.model, 'stcWorkbench.showOutput', `BSL ${state.device.bsl_version}`, 'check')] : []),
-        item('校验 HEX', 'stcWorkbench.checkHex', state.hex ? `${state.hex.bytes} 字节` : '格式与地址检查', 'file-binary'),
-        item('烧录：暂不可用', 'stcWorkbench.flash', '配置映射待核验', 'lock'),
+        item(identification.view().label, 'stcWorkbench.showOutput', identification.view().description, identification.phase === 'success' ? 'check' : 'info'),
+        ...(['error','timeout','cancelled'].includes(identification.phase) && !state.busy ? [item('重新识别', 'stcWorkbench.identify', '连接正常后点击，再按提示 RES', 'refresh')] : []),
+        ...(state.device ? [item(state.device.model, 'stcWorkbench.showDeviceStatus', `BSL ${state.device.bsl_version} · 只读详情`, 'check')] : []),
+        item('校验 HEX', 'stcWorkbench.checkHex', state.hex ? `${state.hex.bytes} 字节 · ${state.hex.blocks.length} 个离线块` : '格式与地址检查', 'file-binary'),
+        ...(state.hex ? [item('预览 HEX 分块', 'stcWorkbench.previewHexBlocks', '地址与 SHA-256 · 不烧录', 'list-flat')] : []),
+        ...(state.hex ? [item('模拟烧录流程', 'stcWorkbench.simulateFlash', '离线 · 不访问硬件', 'beaker')] : []),
+        item('烧录前安全检查', 'stcWorkbench.flashSafety', '仅检查 · 当前不可写入', 'shield'),
+        item('烧录到开发板', 'stcWorkbench.flash', state.hex ? '独立串口烧录 · 按 RES' : '先校验 HEX', 'rocket'),
+        item('打开官方 STC-ISP', 'stcWorkbench.openOfficialIsp', '受控下载通道 · 手动确认', 'external-link'),
         ...(state.busy ? [item('取消当前操作', 'stcWorkbench.cancel', state.busy, 'debug-stop')] : []),
         item('查看日志', 'stcWorkbench.showOutput', '', 'output'),
         { label: '工程源文件', icon: 'files', children: (state.target?.files || []).map(file => ({ label: path.basename(file), description: path.relative(path.dirname(state.project.filename), file), icon: 'file-code', tooltip: file, command: 'vscode.open', args: [vscode.Uri.file(file)] })) }
@@ -287,7 +411,7 @@ function activate(context) {
   };
   const commands = {
     importProject, selectTarget, configureKeil, build: () => build(false), rebuild: () => build(true),
-    setupPython, selectPort, identify, checkHex, flash,
+    setupPython, selectPort, identify, checkHex, previewHexBlocks, simulateFlash, flashSafety, showDeviceStatus, openOfficialIsp, flash,
     cancel: () => state.cancellation?.cancel(),
     showOutput: () => output.show(true),
     settings: () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:stc-workbench-local.stc-c251-workbench')
@@ -311,7 +435,7 @@ function activate(context) {
     refresh();
   };
   const ready = restore();
-  return { ready, getState: () => ({ project: state.project?.filename, target: state.target?.name, port: state.port, busy: state.busy, hex: state.hex, flashEnabled: false }) };
+  return { ready, getState: () => ({ project: state.project?.filename, target: state.target?.name, port: state.port, busy: state.busy, hex: state.hex, identification:identification.view(), device:state.device ? {model:state.device.model,bsl_version:state.device.bsl_version} : null, flashEnabled: true }) };
 }
 function deactivate() { shutdown?.(); }
 module.exports = { activate, deactivate };

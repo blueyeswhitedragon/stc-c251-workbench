@@ -26,7 +26,7 @@ exports.run = async function () {
   assert.equal(blocked.enabled,false); report.steps.push('flash-blocked');
   assert.equal(api.getState().busy,''); assert.equal(api.getState().flashEnabled,false);
   const commands = await vscode.commands.getCommands(true);
-  for (const name of ['identify','selectPort','setupPython','cancel']) assert.ok(commands.includes('stcWorkbench.'+name));
+  for (const name of ['identify','selectPort','setupPython','cancel','previewHexBlocks','simulateFlash','flashSafety','showDeviceStatus']) assert.ok(commands.includes('stcWorkbench.'+name));
   report.steps.push('commands-registered'); report.completedAt = new Date().toISOString();
   await fs.writeFile(path.join(root,'integration-result.json'), JSON.stringify(report,null,2));
   console.log('STC_INTEGRATION_PASS '+report.steps.join(', '));

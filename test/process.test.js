@@ -15,7 +15,7 @@ test('missing executable rejects', async () => {
   await assert.rejects(launch('stc-workbench-nonexistent-test.exe', []), /ENOENT/);
 });
 test('timeout stops the owned process', async () => {
-  await assert.rejects(launch(process.execPath, ['-e','setInterval(()=>{},1000)'], {timeout:300}), CancelledError);
+  await assert.rejects(launch(process.execPath, ['-e','setInterval(()=>{},1000)'], {timeout:300}), error => error instanceof CancelledError && error.code === 'timeout');
 });
 test('pre-cancel never launches', async () => {
   await assert.rejects(launch('must-not-launch.exe', [], {token:{isCancellationRequested:true}}), CancelledError);
@@ -24,5 +24,5 @@ test('cancellation stops a running process and disposes listener', async () => {
   let callback, disposed = false;
   const token = {isCancellationRequested:false, onCancellationRequested(fn) { callback = fn; return {dispose(){disposed=true;}}; }};
   const pending = launch(process.execPath, ['-e','console.log("ready");setInterval(()=>{},1000)'], {token, onStdout:()=>callback()});
-  await assert.rejects(pending, CancelledError); assert.equal(disposed,true);
+  await assert.rejects(pending, error => error instanceof CancelledError && error.code === 'cancelled'); assert.equal(disposed,true);
 });

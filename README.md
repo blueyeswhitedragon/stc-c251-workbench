@@ -1,8 +1,10 @@
-# STC C251 Workbench · 0.1.0 预览版
+# STC C251 Workbench · 0.1.2
 
-在 VS Code 编辑代码，调用本机 Keil C251 编译，并通过 CH340 串口只读识别 STC32G12K128。
+此工作版本尚未发布到 GitHub Releases；已发布的 0.1.0 不受本地开发影响。
 
-**此版本不支持实际烧录。** “烧录”入口仅显示禁用原因，不会擦除 Flash/EEPROM、写程序或修改芯片配置。当前版本先提供编辑、编译和只读识别工作流，未来计划在安全验证完成后加入开源烧录后端。
+在 VS Code 编辑代码，调用本机 Keil C251 编译，并通过 CH340 串口识别和烧录 STC32G12K128。
+
+**独立烧录已在 STC32G12K128（BSL 7.4.5U）上完成真实验证。** 插件不启动官方 STC-ISP；烧录前请按提示手动按开发板 RES。默认仅写入代码区，保留 EEPROM 与硬件选项。
 
 [下载安装包](https://github.com/blueyeswhitedragon/stc-c251-workbench/releases) · [反馈问题](https://github.com/blueyeswhitedragon/stc-c251-workbench/issues) · [更新记录](CHANGELOG.md)
 
@@ -12,12 +14,12 @@
 
 - Windows 本机 VS Code 1.90 或更新版本；必须信任当前工作区。
 - 已安装且有合法使用许可的 Keil µVision + C251。插件不附带编译器，也不转换工具链。
-- 只读识别另需 Python 3.10+、CH340 驱动及开发板；编译不依赖 Python。
+- 识别和独立烧录另需 Python 3.10+、CH340 驱动及开发板；编译不依赖 Python。
 - 关闭官方 STC-ISP 后再编译/识别，避免占用串口或它的 HEX 自动下载监听。
 
 ## 安装和首次编译
 
-1. VS Code 扩展面板右上角 `…` → **从 VSIX 安装…**，选择 `stc-c251-workbench-0.1.0.vsix`。
+1. VS Code 扩展面板右上角 `…` → **从 VSIX 安装…**，选择下载或本地构建的 `stc-c251-workbench-<版本号>.vsix`。
 2. 打开包含 `Project` 与 `Libraries` 的完整工程根目录，保留原目录结构。
 3. 点击左侧 **STC** 图标 → **导入 Keil 工程**，选择现有 `.uvproj`；多个 Target 时按提示选择。
 4. 点击 **Build** 或 **Rebuild**。找不到 Keil 时，从命令面板运行 `STC: 设置 Keil 路径`，选择 `UV4.exe`，不要选择快捷方式。
@@ -30,8 +32,9 @@
 1. 首次点击 **识别环境**，确认创建独立 Python 环境。依赖 wheel 随插件附带，安装不访问网络、不改系统 Python 或 PATH。
 2. 找不到 Python 时，在插件设置中将 `pythonPath` 设置为 Python 可执行文件完整路径，再重试。
 3. 连接 Type-C，点击 **串口**，选择开发板的 CH340 端口。COM 号可能随插口变化，请以本机枚举结果为准。
-4. 点击 **识别芯片**，**等“串口已打开”提示出现后再按一下 RES**。插件等待、显示结果并释放串口。
-5. 超时/取消可重新开始；如果板子停在下载模式，可再按 RES 恢复应用运行。
+4. 点击 **识别芯片**，准备/打开串口时先不要按键；**等通知或侧栏出现“等待 RES”倒计时后，再按一下 RES**。读取阶段无需再按，完成后串口释放。
+5. 超时/取消可点击 **重新识别**；取消中需先等待后端退出。若 USB 拔插导致端口号变化，先重新选择串口。其他串口工具占用时先关闭它们再重试。
+6. 如果板子停在下载模式，可在操作结束后再按 RES 恢复应用运行。同步/断开报文和手动复位可能影响当前程序运行，但不会擦写。
 
 识别会发送同步/断开报文，但不会发送擦除、写程序、写配置或调频命令。只读不代表运行状态完全不变：按 RES 会重启板子。原始状态记录保存在 VS Code 的插件全局存储中，不是程序/EEPROM 备份。复位脚和 EEPROM 映射未经验证，界面不把通用 STC8 解码结果当作事实。
 
@@ -63,7 +66,14 @@ python -m venv .venv
 npm run package
 ```
 
-安装包输出到本仓库的 `artifacts/` 目录。F5 使用扩展开发宿主（先运行 compile）。19 项 JavaScript 和 6 项 Python 单元测试不需要硬件串口。
+安装包输出到本仓库的 `artifacts/` 目录。F5 使用扩展开发宿主（先运行 compile）。29 项 JavaScript 和 20 项 Python 测试不需要硬件串口，其中包含异常注入、恢复测试及上游烧录边界的内存模拟，不能代替实机覆盖。
+
+烧录安全边界、手册页码及实机验证记录见 [烧录安全核验](docs/FLASH_SAFETY.md)。模拟测试不会打开串口，也不能替代实机验证。
+
+独立后端的分层接口和开放条件见 [独立烧录后端分阶段设计](docs/INDEPENDENT_FLASH_PLAN.md)。
+未来如进行专用测试板验证，可使用 [实机验证记录模板](docs/HARDWARE_VALIDATION_PROTOCOL.md)；当前插件不会自动执行其中的写入步骤。
+
+`test/integration-identify/index.js` 是可选的只读硬件验收入口，不属于 `npm test`。它要求隔离的 VS Code 用户数据和扩展目录、名为 `stc-identify-test` 的空测试工作区，以及显式设置 `STC_HARDWARE_TEST=1`、`STC_HARDWARE_PORT`、`STC_HARDWARE_PYTHON`。运行时会打开选定串口、验证取消/重新打开，再等待手动 RES；不运行 Build 或烧录。测试报告只写到本地测试工作区，请勿上传原始采集。
 
 `test/integration/index.js` 与 `test/integration-error/index.js` 是维护者使用的 Keil 实机工具链测试入口，依赖未公开的本地测试工程；普通贡献者只需运行上述离线测试。集成测试**只允许指定命名的完整工程副本**，会编译副本，但不会打开硬件串口。不要对唯一一份工作工程运行它们。
 
@@ -73,6 +83,7 @@ npm run package
 
 - 扩展编译日志和工程兼容性测试。
 - 改善首次环境检查、串口选择和只读识别体验。
+- 增加不接硬件的 STC32 状态模型与 HEX 分块模拟，用于验证数据边界和 UI 流程；该模拟不会生成可直接发送的 ISP 写包。
 - 在确认 STC32 配置保留、地址映射和写后校验后，评估开放烧录。
 
 欢迎通过 Issues 提交问题或通过 Pull Request 贡献代码。请提供系统/工具版本、脱敏后的错误摘要和复现步骤；不要提交个人路径、设备原始采集、固件、Keil 许可证或其他私密内容。涉及硬件擦写的改动必须独立审查，不能以隐藏设置绕过当前保护。
