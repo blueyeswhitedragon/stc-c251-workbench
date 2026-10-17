@@ -24,7 +24,9 @@ jobs:
       - run: npm ci
       - run: npm test
       - name: Python backend tests
-        run: python -m unittest test.test_backend test.test_backend_lifecycle
+        run: python -m unittest test.test_backend
+      - name: Python backend lifecycle tests
+        run: python -m unittest test.test_backend_lifecycle
       - name: Python offline protocol tests
         run: python -m unittest test.test_offline_protocol
       - name: Python programming contract tests
