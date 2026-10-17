@@ -22,7 +22,7 @@ jobs:
           cache: npm
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.14'
       - run: python -m pip install pyserial==3.5
       - run: npm ci
       - run: npm test
