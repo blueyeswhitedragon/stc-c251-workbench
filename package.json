@@ -1,0 +1,64 @@
+{
+  "name": "stc-c251-workbench",
+  "displayName": "STC C251 Workbench",
+  "description": "STC32/C251：导入 Keil 工程、编译、HEX 检查与只读芯片识别。MVP 禁止擦写。",
+  "version": "0.1.0",
+  "publisher": "stc-workbench-local",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/blueyeswhitedragon/stc-c251-workbench.git" },
+  "homepage": "https://github.com/blueyeswhitedragon/stc-c251-workbench#readme",
+  "bugs": { "url": "https://github.com/blueyeswhitedragon/stc-c251-workbench/issues" },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other", "Programming Languages"],
+  "keywords": ["STC32", "C251", "Keil", "CH340"],
+  "main": "./dist/extension.js",
+  "activationEvents": ["onView:stcWorkbench.home"],
+  "extensionKind": ["workspace"],
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false, "description": "调用本地编译器和串口前必须信任工作区。" },
+    "virtualWorkspaces": { "supported": false }
+  },
+  "scripts": {
+    "compile": "esbuild src/extension.js --bundle --platform=node --target=node20 --external:vscode --outfile=dist/extension.js",
+    "test": "node --test test/core.test.js test/process.test.js",
+    "vscode:prepublish": "npm run compile && node scripts/licenses.js",
+    "package": "node scripts/package.js"
+  },
+  "dependencies": { "fast-xml-parser": "5.11.2", "iconv-lite": "0.7.2" },
+  "devDependencies": { "@vscode/vsce": "3.7.1", "esbuild": "0.25.12" },
+  "contributes": {
+    "commands": [
+      { "command": "stcWorkbench.importProject", "title": "STC: 导入 Keil 工程", "icon": "$(folder-opened)" },
+      { "command": "stcWorkbench.selectTarget", "title": "STC: 选择 Target" },
+      { "command": "stcWorkbench.build", "title": "STC: Build 编译", "icon": "$(tools)" },
+      { "command": "stcWorkbench.rebuild", "title": "STC: Rebuild 全部重新编译" },
+      { "command": "stcWorkbench.selectPort", "title": "STC: 选择串口" },
+      { "command": "stcWorkbench.identify", "title": "STC: 识别芯片（只读）", "icon": "$(circuit-board)" },
+      { "command": "stcWorkbench.checkHex", "title": "STC: 校验 HEX 文件" },
+      { "command": "stcWorkbench.flash", "title": "STC: 烧录状态（MVP 禁用）" },
+      { "command": "stcWorkbench.setupPython", "title": "STC: 配置芯片识别环境" },
+      { "command": "stcWorkbench.configureKeil", "title": "STC: 设置 Keil 路径" },
+      { "command": "stcWorkbench.cancel", "title": "STC: 取消当前操作", "icon": "$(debug-stop)" },
+      { "command": "stcWorkbench.showOutput", "title": "STC: 显示日志" },
+      { "command": "stcWorkbench.settings", "title": "STC: 打开插件设置", "icon": "$(gear)" }
+    ],
+    "viewsContainers": { "activitybar": [{ "id": "stcWorkbench", "title": "STC", "icon": "media/chip.svg" }] },
+    "views": { "stcWorkbench": [{ "id": "stcWorkbench.home", "name": "STC C251 工作台" }] },
+    "menus": { "view/title": [
+      { "command": "stcWorkbench.importProject", "when": "view == stcWorkbench.home", "group": "navigation" },
+      { "command": "stcWorkbench.cancel", "when": "view == stcWorkbench.home && stcWorkbench.busy", "group": "navigation" },
+      { "command": "stcWorkbench.settings", "when": "view == stcWorkbench.home", "group": "navigation" }
+    ] },
+    "configuration": {
+      "title": "STC C251 Workbench",
+      "properties": {
+        "stcWorkbench.keilPath": { "type": "string", "default": "", "scope": "machine", "description": "UV4.exe 的完整路径。留空时检查常见 Keil 安装目录。" },
+        "stcWorkbench.pythonPath": { "type": "string", "default": "python", "scope": "machine", "description": "创建独立识别环境使用的 Python 3.10+ 可执行文件。" },
+        "stcWorkbench.probePythonPath": { "type": "string", "default": "", "scope": "machine", "description": "可选：已安装 pyserial 和 tqdm 的 Python；留空则使用插件创建的独立环境。" },
+        "stcWorkbench.probeTimeout": { "type": "integer", "default": 180, "minimum": 10, "maximum": 300, "description": "等待 RES 的秒数。" },
+        "stcWorkbench.buildTimeout": { "type": "integer", "default": 300, "minimum": 30, "maximum": 1800, "description": "编译超时秒数。" },
+        "stcWorkbench.logEncoding": { "type": "string", "enum": ["auto", "utf8", "gbk"], "default": "auto", "description": "Keil 日志编码。auto 优先 UTF-8，遇无效字节时使用 GBK。" }
+      }
+    }
+  }
+}
