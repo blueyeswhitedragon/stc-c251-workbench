@@ -353,12 +353,13 @@ function activate(context) {
         if (event.event === 'identified') progress.report({ message: '已识别 STC32G12K128，正在擦除代码区…' });
         if (event.event === 'writing') progress.report({ message: `正在下载 ${event.total} 字节…` });
         if (event.event === 'progress' && event.total) progress.report({ increment: Math.min(100, event.done / event.total * 100), message: `正在下载 ${event.done}/${event.total} 字节…` });
+        if (event.event === 'verified') progress.report({ message: `已确认 ${event.blocks} 个写入块和结束包（协议校验）…` });
       }, (seconds + 30) * 1000);
       if (token.isCancellationRequested) throw new CancelledError();
       const result = events.find(e => e.event === 'flashed');
       if (!result) throw new Error('后端没有返回烧录成功确认。');
       state.device = null; identification.reset(); refresh();
-      log(`烧录成功：${result.bytes} 字节，SHA-256 ${result.sha256}；串口已释放。`);
+      log(`烧录成功：${result.bytes} 字节，${result.blocks} 个 64 字节块；HEX SHA-256 ${result.sha256}；镜像 SHA-256 ${result.imageSha256}；已确认块 ACK/结束 ACK（未执行芯片读回）；串口已释放。`);
       void vscode.window.showInformationMessage('STC32G12K128 烧录成功，开发板已复位运行。');
       return result;
     });

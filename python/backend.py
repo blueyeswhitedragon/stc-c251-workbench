@@ -71,7 +71,8 @@ def load_stc32_hex(filename):
     image = bytearray([0xff]) * highest
     for address, value in memory.items():
         image[address - 0xff0000] = value
-    return bytes(image), hashlib.sha256(raw_file).hexdigest(), len(code)
+    dense = bytes(image)
+    return dense, hashlib.sha256(raw_file).hexdigest(), len(code)
 
 
 def emit(kind, **values):
@@ -165,6 +166,9 @@ def flash_device(port, filename, seconds=180):
     from stcgal.protocols import StcProtocolException
 
     image, digest, code_bytes = load_stc32_hex(filename)
+    image_digest = hashlib.sha256(image).hexdigest()
+    block_size = 64
+    block_count = (len(image) + block_size - 1) // block_size
 
     class FlashProbe(ReadOnlyProbe):
         # ReadOnlyProbe aliases these methods to ``blocked`` at class
@@ -250,12 +254,17 @@ def flash_device(port, filename, seconds=180):
             emit('erasing', message='芯片已识别，正在擦除代码区。')
             probe.handshake()
             probe.erase_flash(len(image), probe.model.code)
-            emit('writing', total=len(image), sha256=digest, codeBytes=code_bytes)
+            emit('writing', total=len(image), sha256=digest, imageSha256=image_digest,
+                 codeBytes=code_bytes, blockSize=block_size, blocks=block_count)
             probe.progress_cb = lambda done, step, total: emit('progress', done=min(done, total), total=total)
             probe.program_flash(image)
-            emit('verified', message='BSL 已确认每个写入块；写入完成包已确认。')
+            emit('verified', message='传输完整性确认：每个写入块 ACK 和结束 ACK 均已收到；未执行芯片读回校验。',
+                 blocks=block_count, blockSize=block_size, imageSha256=image_digest,
+                 readback=False)
             probe.disconnect()
-        emit('flashed', port=port, model='STC32G12K128', sha256=digest, bytes=code_bytes)
+        emit('flashed', port=port, model='STC32G12K128', sha256=digest,
+             imageSha256=image_digest, bytes=code_bytes, blocks=block_count,
+             blockSize=block_size, readback=False)
         return 0
     except ProbeTimeout:
         emit('error', code='timeout', message='等待 RES 超时，未擦写。请重新点击烧录后再按 RES。')
