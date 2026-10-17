@@ -27,13 +27,13 @@ jobs:
       - run: npm ci
       - run: npm test
       - name: Python backend tests
-        run: python -m unittest test.test_backend
+        run: python -m unittest discover -s test -p 'test_backend.py'
       - name: Python backend lifecycle tests
-        run: python -m unittest test.test_backend_lifecycle
+        run: python -m unittest discover -s test -p 'test_backend_lifecycle.py'
       - name: Python offline protocol tests
-        run: python -m unittest test.test_offline_protocol
+        run: python -m unittest discover -s test -p 'test_offline_protocol.py'
       - name: Python programming contract tests
-        run: python -m unittest test.test_programming_contract
+        run: python -m unittest discover -s test -p 'test_programming_contract.py'
       - run: python -m py_compile python/backend.py python/probe_core.py
 
   package:
