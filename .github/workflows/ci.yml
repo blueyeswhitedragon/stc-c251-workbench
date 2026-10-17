@@ -34,6 +34,8 @@ jobs:
         run: python -m unittest discover -s test -p 'test_offline_protocol.py'
       - name: Python programming contract tests
         run: python -m unittest discover -s test -p 'test_programming_contract.py'
+      - name: Python protocol registry tests
+        run: python -m unittest discover -s test -p 'test_protocol_registry.py'
       - run: python -m py_compile python/backend.py python/probe_core.py
 
   package:

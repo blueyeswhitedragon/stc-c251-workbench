@@ -9,6 +9,7 @@ import time
 import hashlib
 
 sys.path.insert(0, str(Path(__file__).parent / "vendor"))
+from protocol_registry import target_for_magic
 WIRE = sys.stdout
 
 
@@ -248,12 +249,13 @@ def flash_device(port, filename, seconds=180):
             probe = FlashProbe(port, deadline)
             probe.connect(autoreset=False)
             probe.initialize()
-            if probe.mcu_magic != 0xf7e3 or probe.model.name != 'STC32G12K128':
+            target = target_for_magic(probe.mcu_magic)
+            if not target or probe.model.name != target['model']:
                 raise StcProtocolException(f'检测到 {probe.model.name}（Magic 0x{probe.mcu_magic:04X}），不是已验证的 STC32G12K128')
             emit('identified', model=probe.model.name, magic='0xF7E3', bsl=probe.mcu_bsl_version)
             emit('erasing', message='芯片已识别，正在擦除代码区。')
             probe.handshake()
-            probe.erase_flash(len(image), probe.model.code)
+            probe.erase_flash(len(image), target['code_size'])
             emit('writing', total=len(image), sha256=digest, imageSha256=image_digest,
                  codeBytes=code_bytes, blockSize=block_size, blocks=block_count)
             probe.progress_cb = lambda done, step, total: emit('progress', done=min(done, total), total=total)
