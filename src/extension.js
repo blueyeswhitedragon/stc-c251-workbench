@@ -364,6 +364,23 @@ function activate(context) {
       return result;
     });
   }
+  async function monitorSerial() {
+    requireTrust(); requireIdle();
+    if (!state.port) { await selectPort(); if (!state.port) return { monitored: false }; }
+    return operation('串口监视器', async (token, progress) => {
+      output.show(true);
+      const python = await getPython();
+      const baud = config().get('monitorBaud', 115200);
+      log(`串口监视器：${state.port} @ ${baud}；点击“取消当前操作”停止。`);
+      const seconds = 24 * 60 * 60;
+      const events = await runBackend(python, ['monitor', '--port', state.port, '--baud', String(baud), '--seconds', String(seconds)], token, event => {
+        if (event.event === 'opened') progress.report({ message: `正在监听 ${state.port} @ ${baud}…` });
+        if (event.event === 'data') output.append(event.text || '');
+        if (event.event === 'closed') log('串口监视器已关闭，串口已释放。');
+      }, seconds * 1000 + 5000);
+      return { monitored: true, events: events.filter(event => event.event === 'data').length };
+    });
+  }
   async function openOfficialIsp() {
     requireTrust(); requireIdle();
     const executable = config().get('officialIspPath', '').trim();
@@ -394,6 +411,7 @@ function activate(context) {
         item('Rebuild', 'stcWorkbench.rebuild', '全部重新编译', 'refresh'),
         item('识别环境', 'stcWorkbench.setupPython', '首次使用时配置', 'python'),
         item('串口', 'stcWorkbench.selectPort', state.port || '未选择', 'plug'),
+        item('串口监视器', 'stcWorkbench.monitorSerial', state.port ? `监听 ${state.port}` : '先选择串口', 'terminal'),
         item('识别芯片', 'stcWorkbench.identify', '只读 · 按 RES', 'circuit-board'),
         item(identification.view().label, 'stcWorkbench.showOutput', identification.view().description, identification.phase === 'success' ? 'check' : 'info'),
         ...(['error','timeout','cancelled'].includes(identification.phase) && !state.busy ? [item('重新识别', 'stcWorkbench.identify', '连接正常后点击，再按提示 RES', 'refresh')] : []),
@@ -412,7 +430,7 @@ function activate(context) {
   };
   const commands = {
     importProject, selectTarget, configureKeil, build: () => build(false), rebuild: () => build(true),
-    setupPython, selectPort, identify, checkHex, previewHexBlocks, simulateFlash, flashSafety, showDeviceStatus, openOfficialIsp, flash,
+    setupPython, selectPort, identify, checkHex, previewHexBlocks, simulateFlash, flashSafety, showDeviceStatus, openOfficialIsp, flash, monitorSerial,
     cancel: () => state.cancellation?.cancel(),
     showOutput: () => output.show(true),
     settings: () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:stc-workbench-local.stc-c251-workbench')

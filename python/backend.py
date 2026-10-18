@@ -289,6 +289,33 @@ def flash_device(port, filename, seconds=180):
             emit('error', code='close_failed', message=f'串口释放失败：{error}')
 
 
+def monitor_serial(port, baud, seconds=3600):
+    """Stream ordinary UART data as JSON events until the process is stopped."""
+    import serial
+    connection = None
+    deadline = time.monotonic() + seconds
+    emit('opening', port=port, baud=baud, message=f'串口监视器已打开：{port} @ {baud}。')
+    try:
+        connection = serial.Serial(port=port, baudrate=baud, timeout=0.2)
+        emit('opened', port=port, baud=baud)
+        while time.monotonic() < deadline:
+            data = connection.read(4096)
+            if data:
+                emit('data', port=port, encoding='utf8', text=data.decode('utf-8', errors='replace'), hex=data.hex())
+    except serial.SerialException as error:
+        emit('error', code='serial_unavailable', message=f'串口不可用或被占用：{error}')
+        return 3
+    finally:
+        try:
+            if connection is not None and connection.is_open:
+                connection.close()
+            emit('closed', port=port, released=True)
+        except Exception as error:
+            emit('closed', port=port, released=False)
+            emit('error', code='close_failed', message=f'串口释放失败：{error}')
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -301,6 +328,10 @@ def main():
     flash.add_argument("--port", required=True)
     flash.add_argument("--hex", required=True)
     flash.add_argument("--seconds", type=int, choices=range(10, 301), default=180)
+    monitor = sub.add_parser("monitor")
+    monitor.add_argument("--port", required=True)
+    monitor.add_argument("--baud", type=int, choices=[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200], default=115200)
+    monitor.add_argument("--seconds", type=int, choices=range(10, 86401), default=3600)
     args = parser.parse_args()
     try:
         import serial
@@ -322,6 +353,9 @@ def main():
         except (OSError, ValueError) as error:
             emit('error', code='hex_invalid', message=str(error))
             return 3
+
+    if args.command == "monitor":
+        return monitor_serial(args.port, args.baud, args.seconds)
 
     return identify_device(args.port, args.seconds)
 
