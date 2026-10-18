@@ -14,14 +14,14 @@ function activate(context) {
   const output = vscode.window.createOutputChannel('STC C251 Workbench');
   const diagnostics = vscode.languages.createDiagnosticCollection('stc-c251');
   const changed = new vscode.EventEmitter();
-  const state = { project: null, target: null, port: context.workspaceState.get('port', ''), device: null, hex: null, busy: '', cancellation: null };
+  const state = { project: null, target: null, port: context.workspaceState.get('port', ''), device: null, hex: null, busy: '', stage: '', cancellation: null };
   const identification = new IdentifyState();
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 45);
   status.command = 'stcWorkbench.build';
   const config = () => vscode.workspace.getConfiguration('stcWorkbench');
   const log = message => output.appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
   const refresh = () => {
-    status.text = state.busy ? `$(sync~spin) STC: ${state.busy === '只读识别' ? identification.view().label : state.busy}` : `$(circuit-board) STC: ${state.target?.name || '导入工程'}`;
+    status.text = state.busy ? `$(sync~spin) STC: ${state.stage || (state.busy === '只读识别' ? identification.view().label : state.busy)}` : `$(circuit-board) STC: ${state.target?.name || '导入工程'}`;
     status.command = state.busy ? 'stcWorkbench.cancel' : state.project ? 'stcWorkbench.build' : 'stcWorkbench.importProject';
     status.tooltip = 'STC C251 Workbench · STC32 独立烧录'; status.show(); changed.fire();
     void vscode.commands.executeCommand('setContext', 'stcWorkbench.busy', Boolean(state.busy));
@@ -39,7 +39,7 @@ function activate(context) {
         const sub = uiToken.onCancellationRequested(() => state.cancellation?.cancel());
         try { return await action(state.cancellation.token, progress); } finally { sub.dispose(); }
       });
-    } finally { state.cancellation.dispose(); state.cancellation = null; state.busy = ''; refresh(); }
+    } finally { state.cancellation.dispose(); state.cancellation = null; state.busy = ''; state.stage = ''; refresh(); }
   }
   async function loadProject(filename, targetName) {
     const stat = await fs.stat(filename);
@@ -354,6 +354,13 @@ function activate(context) {
       { modal: true }, '开始烧录');
     if (answer !== '开始烧录') return { flashed: false, cancelled: true };
     return operation('独立烧录', async (token, progress) => {
+      let reported = 0;
+      const stage = (message, percent) => {
+        state.stage = message; refresh();
+        const update = { message };
+        if (Number.isFinite(percent)) { const next = Math.max(reported, Math.min(100, percent)); update.increment = next - reported; reported = next; }
+        progress.report(update);
+      };
       output.show(true); await blockOfficialIsp(token);
       const python = await getPython();
       const ports = (await runBackend(python, ['ports'], token)).find(e => e.event === 'ports')?.ports || [];
@@ -362,11 +369,11 @@ function activate(context) {
       log(`独立烧录 ${state.port}：${state.hex.path}\nSHA-256：${state.hex.sha256}\n仅代码区；EEPROM/硬件选项保持不变。`);
       const events = await runBackend(python, ['flash', '--port', state.port, '--hex', state.hex.path, '--seconds', String(seconds)], token, event => {
         if (event.message) log(event.message);
-        if (event.event === 'waiting') progress.report({ message: '请按一下开发板 RES，等待芯片响应…' });
-        if (event.event === 'identified') progress.report({ message: '已识别 STC32G12K128，正在擦除代码区…' });
-        if (event.event === 'writing') progress.report({ message: `正在下载 ${event.total} 字节…` });
-        if (event.event === 'progress' && event.total) progress.report({ increment: Math.min(100, event.done / event.total * 100), message: `正在下载 ${event.done}/${event.total} 字节…` });
-        if (event.event === 'verified') progress.report({ message: `已确认 ${event.blocks} 个写入块和结束包（协议校验）…` });
+        if (event.event === 'waiting') stage('请按一下开发板 RES，等待芯片响应…');
+        if (event.event === 'identified') stage('已识别 STC32G12K128，正在擦除代码区…');
+        if (event.event === 'writing') stage(`正在下载 ${event.total} 字节…`, 0);
+        if (event.event === 'progress' && event.total) stage(`正在下载 ${event.done}/${event.total} 字节…`, event.done / event.total * 100);
+        if (event.event === 'verified') stage(`已确认 ${event.blocks} 个写入块和结束包（协议校验）…`, 100);
       }, (seconds + 30) * 1000);
       if (token.isCancellationRequested) throw new CancelledError();
       const result = events.find(e => e.event === 'flashed');
@@ -468,7 +475,7 @@ function activate(context) {
     refresh();
   };
   const ready = restore();
-  return { ready, getState: () => ({ project: state.project?.filename, target: state.target?.name, port: state.port, busy: state.busy, hex: state.hex, identification:identification.view(), device:state.device ? {model:state.device.model,bsl_version:state.device.bsl_version} : null, flashEnabled: true }) };
+  return { ready, getState: () => ({ project: state.project?.filename, target: state.target?.name, port: state.port, busy: state.busy, stage: state.stage, hex: state.hex, identification:identification.view(), device:state.device ? {model:state.device.model,bsl_version:state.device.bsl_version} : null, flashEnabled: true }) };
 }
 function deactivate() { shutdown?.(); }
 module.exports = { activate, deactivate };
