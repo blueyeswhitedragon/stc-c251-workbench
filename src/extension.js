@@ -6,6 +6,7 @@ const { StringDecoder } = require('node:string_decoder');
 const core = require('./core');
 const { launch, CancelledError } = require('./process');
 const { IdentifyState } = require('./identify-state');
+const { findKeil } = require('./toolchain');
 
 let shutdown;
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
@@ -73,9 +74,21 @@ function activate(context) {
   }
   async function getKeil() {
     const specified = config().get('keilPath', '').trim();
-    const candidates = specified ? [specified] : ['C:\\Keil_v5\\UV4\\UV4.exe', 'C:\\Keil\\UV4\\UV4.exe', 'C:\\Keil_v5\\UV4.exe'];
-    for (const candidate of candidates) if (await exists(candidate)) return candidate;
-    throw new Error('找不到 UV4.exe。请运行「STC: 设置 Keil 路径」。');
+    const executable = await findKeil(specified);
+    if (executable) return executable;
+    throw new Error('自动检测不到 UV4.exe。请运行「STC: 设置 Keil 路径」或检查 Keil/STC 工具链安装。');
+  }
+  async function detectKeil() {
+    requireTrust(); requireIdle();
+    const specified = config().get('keilPath', '').trim();
+    const executable = await findKeil(specified);
+    if (!executable) {
+      log('Keil 自动检测失败：未找到 UV4.exe。未修改 PATH 或系统配置。');
+      throw new Error('未找到 UV4.exe；可用「STC: 设置 Keil 路径」手动指定。');
+    }
+    log(`Keil 自动检测成功：${executable}`);
+    void vscode.window.showInformationMessage(`已检测到 Keil：${executable}`);
+    return { path: executable, configured: Boolean(specified) };
   }
   async function configureKeil() {
     requireTrust(); requireIdle();
@@ -409,6 +422,7 @@ function activate(context) {
         item('Target', 'stcWorkbench.selectTarget', state.target?.name || '未选择', 'list-selection'),
         item('Build', 'stcWorkbench.build', state.target?.toolset || 'C251', 'tools'),
         item('Rebuild', 'stcWorkbench.rebuild', '全部重新编译', 'refresh'),
+        item('自动检测 Keil', 'stcWorkbench.detectKeil', '只读检查 UV4.exe 安装位置', 'search'),
         item('识别环境', 'stcWorkbench.setupPython', '首次使用时配置', 'python'),
         item('串口', 'stcWorkbench.selectPort', state.port || '未选择', 'plug'),
         item('串口监视器', 'stcWorkbench.monitorSerial', state.port ? `监听 ${state.port}` : '先选择串口', 'terminal'),
@@ -429,7 +443,7 @@ function activate(context) {
     }
   };
   const commands = {
-    importProject, selectTarget, configureKeil, build: () => build(false), rebuild: () => build(true),
+    importProject, selectTarget, configureKeil, detectKeil, build: () => build(false), rebuild: () => build(true),
     setupPython, selectPort, identify, checkHex, previewHexBlocks, simulateFlash, flashSafety, showDeviceStatus, openOfficialIsp, flash, monitorSerial,
     cancel: () => state.cancellation?.cancel(),
     showOutput: () => output.show(true),

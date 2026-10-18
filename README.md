@@ -1,6 +1,6 @@
-# STC C251 Workbench · 0.1.5
+# STC C251 Workbench · 0.1.6
 
-此工作版本尚未发布到 GitHub Releases；已发布的 0.1.0 不受本地开发影响。
+此工作版本已加入 Keil/STC 工具链自动检测；检测仅读取常见安装目录，不修改 PATH。
 
 在 VS Code 编辑代码，调用本机 Keil C251 编译，并通过 CH340 串口识别和烧录 STC32G12K128。
 
