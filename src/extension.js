@@ -367,14 +367,22 @@ function activate(context) {
       if (!ports.some(p => p.port.toLowerCase() === state.port.toLowerCase())) throw new Error('所选串口已断开，请重新连接开发板。');
       const seconds = config().get('probeTimeout', 180);
       log(`独立烧录 ${state.port}：${state.hex.path}\nSHA-256：${state.hex.sha256}\n仅代码区；EEPROM/硬件选项保持不变。`);
-      const events = await runBackend(python, ['flash', '--port', state.port, '--hex', state.hex.path, '--seconds', String(seconds)], token, event => {
-        if (event.message) log(event.message);
+      const eraseTimeout = config().get('eraseTimeout', 30);
+      let events;
+      try {
+      events = await runBackend(python, ['flash', '--port', state.port, '--hex', state.hex.path, '--seconds', String(seconds), '--erase-timeout', String(eraseTimeout)], token, event => {
+        if (event.message && event.event !== 'error') log(event.message);
         if (event.event === 'waiting') stage('请按一下开发板 RES，等待芯片响应…');
-        if (event.event === 'identified') stage('已识别 STC32G12K128，正在擦除代码区…');
+        if (event.event === 'identified') stage('芯片已识别，准备握手…');
+        if (event.event === 'stage') stage(({handshake:'校准与握手',erase:'擦除代码区，等待确认',write:'写入代码',finish:'等待结束确认'})[event.stage] || event.stage);
         if (event.event === 'writing') stage(`正在下载 ${event.total} 字节…`, 0);
         if (event.event === 'progress' && event.total) stage(`正在下载 ${event.done}/${event.total} 字节…`, event.done / event.total * 100);
         if (event.event === 'verified') stage(`已确认 ${event.blocks} 个写入块和结束包（协议校验）…`, 100);
-      }, (seconds + 30) * 1000);
+      }, (seconds + eraseTimeout + 180) * 1000);
+      } catch (error) {
+        if (error instanceof CancelledError) error.message += '；烧录中断，代码区状态未知，可能已擦除或部分写入。请等待串口释放，检查连接后重新烧录。';
+        throw error;
+      }
       if (token.isCancellationRequested) throw new CancelledError();
       const result = events.find(e => e.event === 'flashed');
       if (!result) throw new Error('后端没有返回烧录成功确认。');

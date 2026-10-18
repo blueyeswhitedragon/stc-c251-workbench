@@ -160,11 +160,14 @@ def identify_device(port, seconds, probe_type=None):
     return exit_code
 
 
-def flash_device(port, filename, seconds=180):
+def flash_device(port, filename, seconds=180, erase_timeout=30):
     """Program STC32G12K128 directly over the CH340 serial bootloader."""
     import serial
     from probe_core import ReadOnlyProbe, ProbeTimeout
     from stcgal.protocols import StcProtocolException
+    from flash_diagnostics import FlashDiagnostics, read_exact
+
+    diagnostics = FlashDiagnostics(emit, erase_timeout)
 
     image, digest, code_bytes = load_stc32_hex(filename)
     image_digest = hashlib.sha256(image).hexdigest()
@@ -229,21 +232,38 @@ def flash_device(port, filename, seconds=180):
         # Use the protocol's paired pulse/read implementation.  The
         # identification probe's buffered read sends a sync byte when no
         # frame is pending, which is invalid after an erase/write command.
-        pulse = Stc8dProtocol.pulse
+        def pulse(self, character=b'\x7f', timeout=0):
+            if diagnostics.stage == 'waiting':
+                self.check_deadline()
+                if not getattr(self, 'waiting_announced', False):
+                    self.waiting_announced = True
+                    emit('waiting', port=port, seconds=seconds, message='串口已打开，等待芯片；若未自动进入下载模式，请按 RES。')
+                timeout = max(0.01, min(1.0, self.deadline - time.monotonic()))
+            return self.Stc8dProtocol.pulse(self, character, timeout)
 
         def write_packet(self, packet_data, epilogue_len=0):
             # STC32 UART uses the STC15 frame: length=payload+5 and a
             # one-byte additive checksum followed by 0x16.
+            if packet_data[:1] == b'\x03':
+                diagnostics.may_have_erased = True
+            if packet_data[:1] == b'\x07':
+                diagnostics.enter('finish', self.ser)
+            diagnostics.control('TX payload', packet_data)
             return self.Stc15Protocol.write_packet(self, packet_data, epilogue_len)
 
         def read_packet(self):
+            self.response_deadline = time.monotonic() + diagnostics.timeout
             return self.Stc15Protocol.read_packet(self)
+
+        def read_bytes_safe(self, count):
+            if not 0 <= count <= 512:
+                raise StcProtocolException('Invalid ISP frame length')
+            return read_exact(self.ser, count, self.response_deadline, diagnostics)
 
     deadline = time.monotonic() + seconds
     probe = None
     log = EventLog()
-    emit('opening', port=port, message='正在打开串口，请现在按一下开发板 RES。')
-    emit('waiting', port=port, seconds=seconds, message='串口已打开，请按一下 RES；检测到芯片后将自动擦除并下载。')
+    emit('opening', port=port, message='正在打开串口；若开发板不能自动复位，请等“等待芯片”提示后按 RES。')
     try:
         with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
             probe = FlashProbe(port, deadline)
@@ -254,9 +274,14 @@ def flash_device(port, filename, seconds=180):
                 status = target.get('verification', 'unsupported') if target else 'unsupported'
                 raise StcProtocolException(f'检测到 {probe.model.name}（Magic 0x{probe.mcu_magic:04X}），当前仅支持已验证的 STC32G12K128；此型号状态为 {status}，未执行擦写')
             emit('identified', model=probe.model.name, magic='0xF7E3', bsl=probe.mcu_bsl_version)
-            emit('erasing', message='芯片已识别，正在擦除代码区。')
+            emit('log', message=f'ISP 型号 {probe.model.name} / Magic 0x{probe.mcu_magic:04X} / BSL {probe.mcu_bsl_version}；不自动重试擦除。')
+            diagnostics.enter('handshake', probe.ser)
             probe.handshake()
+            diagnostics.enter('erase', probe.ser)
+            emit('erasing', message='握手完成，正在擦除代码区，等待芯片确认。')
             probe.erase_flash(len(image), target['code_size'])
+            emit('log', message=f'擦除确认耗时 {time.monotonic() - diagnostics.started:.3f} 秒。')
+            diagnostics.enter('write', probe.ser)
             emit('writing', total=len(image), sha256=digest, imageSha256=image_digest,
                  codeBytes=code_bytes, blockSize=block_size, blocks=block_count)
             probe.progress_cb = lambda done, step, total: emit('progress', done=min(done, total), total=total)
@@ -269,11 +294,13 @@ def flash_device(port, filename, seconds=180):
              imageSha256=image_digest, bytes=code_bytes, blocks=block_count,
              blockSize=block_size, readback=False)
         return 0
-    except ProbeTimeout:
-        emit('error', code='timeout', message='等待 RES 超时，未擦写。请重新点击烧录后再按 RES。')
+    except (ProbeTimeout, serial.SerialTimeoutException) as error:
+        code, message = diagnostics.failure(timeout=True)
+        emit('error', code=code, stage=diagnostics.stage, message=f'{message} [{error}]')
         return 2
     except serial.SerialException as error:
-        emit('error', code='serial_unavailable', message=f'串口不可用或被占用：{error}')
+        code, message = diagnostics.failure()
+        emit('error', code=code, stage=diagnostics.stage, message=f'{message} [{error}]')
         return 3
     except Exception as error:
         emit('error', code='flash_failed', message=f'独立烧录失败，设备可能未被完整写入：{error}')
@@ -329,6 +356,7 @@ def main():
     flash.add_argument("--port", required=True)
     flash.add_argument("--hex", required=True)
     flash.add_argument("--seconds", type=int, choices=range(10, 301), default=180)
+    flash.add_argument("--erase-timeout", type=int, choices=range(5, 121), default=30)
     monitor = sub.add_parser("monitor")
     monitor.add_argument("--port", required=True)
     monitor.add_argument("--baud", type=int, choices=[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200], default=115200)
@@ -350,7 +378,7 @@ def main():
 
     if args.command == "flash":
         try:
-            return flash_device(args.port, args.hex, args.seconds)
+            return flash_device(args.port, args.hex, args.seconds, args.erase_timeout)
         except (OSError, ValueError) as error:
             emit('error', code='hex_invalid', message=str(error))
             return 3
