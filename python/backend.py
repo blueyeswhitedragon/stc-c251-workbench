@@ -250,8 +250,9 @@ def flash_device(port, filename, seconds=180):
             probe.connect(autoreset=False)
             probe.initialize()
             target = target_for_magic(probe.mcu_magic)
-            if not target or probe.model.name != target['model']:
-                raise StcProtocolException(f'检测到 {probe.model.name}（Magic 0x{probe.mcu_magic:04X}），不是已验证的 STC32G12K128')
+            if not target or probe.model.name != target['model'] or not target.get('flash_enabled', False):
+                status = target.get('verification', 'unsupported') if target else 'unsupported'
+                raise StcProtocolException(f'检测到 {probe.model.name}（Magic 0x{probe.mcu_magic:04X}），当前仅支持已验证的 STC32G12K128；此型号状态为 {status}，未执行擦写')
             emit('identified', model=probe.model.name, magic='0xF7E3', bsl=probe.mcu_bsl_version)
             emit('erasing', message='芯片已识别，正在擦除代码区。')
             probe.handshake()

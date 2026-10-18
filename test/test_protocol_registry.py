@@ -14,6 +14,14 @@ class ProtocolRegistryTests(unittest.TestCase):
         self.assertEqual(target["family"], "stc32-uart")
         self.assertEqual(target["block_size"], 64)
         self.assertEqual(target["code_size"], 131072)
+        self.assertTrue(target["flash_enabled"])
+        self.assertEqual(target["verification"], "hardware-verified")
+
+    def test_known_models_are_identification_only_until_validated(self):
+        target = target_for_magic(0xF850)
+        self.assertEqual(target["model"], "STC32G8K64-Beta")
+        self.assertFalse(target["flash_enabled"])
+        self.assertEqual(target["verification"], "identify-only")
 
     def test_unknown_magic_is_not_supported(self):
         self.assertIsNone(target_for_magic(0x1234))
