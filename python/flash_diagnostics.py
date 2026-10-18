@@ -17,7 +17,10 @@ class FlashDiagnostics:
         self.started = time.monotonic()
         self.timeout = {'handshake': 15, 'erase': self.erase_timeout,
                         'write': 5, 'finish': 5}.get(stage, 15)
-        connection.timeout = self.timeout
+        # Keep the driver's read timeout stable across frame fragments.
+        # On Windows a timeout assignment reconfigures the serial device.
+        # The response deadline below, not a single read(), owns the budget.
+        connection.timeout = 0.25
         self.emit('stage', stage=stage, timeout=self.timeout,
                   message=f'烧录阶段：{stage}；单次响应上限 {self.timeout} 秒。')
 
@@ -41,12 +44,21 @@ class FlashDiagnostics:
 
 def read_exact(connection, count, deadline, diagnostics):
     """Use one deadline for the entire response, not one timeout per byte."""
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise serial.SerialTimeoutException('response deadline exceeded')
-    connection.timeout = remaining
-    data = connection.read(count)
-    diagnostics.control('RX', data)
-    if len(data) != count:
-        raise serial.SerialTimeoutException(f'read timeout ({len(data)}/{count} bytes)')
-    return data
+    data = bytearray()
+    while len(data) < count:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise serial.SerialTimeoutException(f'response deadline exceeded ({len(data)}/{count} bytes)')
+        # Only shorten the final blocking read, never reset the deadline or
+        # change the driver configuration after every byte.
+        if connection.timeout is None or connection.timeout > remaining:
+            connection.timeout = remaining
+        chunk = connection.read(count - len(data))
+        if chunk:
+            diagnostics.control('RX', chunk)
+            data.extend(chunk)
+        else:
+            if getattr(connection, 'is_open', True) is False:
+                raise serial.SerialException('serial port closed during response')
+            time.sleep(min(0.01, remaining))
+    return bytes(data)

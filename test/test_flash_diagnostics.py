@@ -21,15 +21,37 @@ class FlashDiagnosticTests(unittest.TestCase):
     def test_response_deadline_and_partial_rx(self):
         events = []
         diag = FlashDiagnostics(lambda kind, **kw: events.append(kw), 30)
-        connection = SimpleNamespace(read=lambda n: b'\x46')
-        with patch('flash_diagnostics.time.monotonic', return_value=100):
-            diag.enter('erase', connection)
+        diag.stage = 'erase'
+        connection = SimpleNamespace(timeout=0.25, read=lambda n: b'\x46')
+        with patch('flash_diagnostics.time.monotonic', side_effect=[100, 100, 103]):
             with self.assertRaises(serial.SerialTimeoutException):
                 read_exact(connection, 2, 102, diag)
-            self.assertEqual(connection.timeout, 2)
+        with patch('flash_diagnostics.time.monotonic', return_value=100):
             with self.assertRaises(serial.SerialTimeoutException):
                 read_exact(connection, 1, 99, diag)
         self.assertIn('46', events[-1]['message'])
+
+    def test_empty_reads_and_fragmentation_wait_with_one_deadline(self):
+        diag = FlashDiagnostics(lambda *a, **k: None)
+        chunks = iter([b'', b'\x46', b'', b'\xb9'])
+        connection = SimpleNamespace(timeout=0.25, read=lambda n: next(chunks))
+        with patch('flash_diagnostics.time.monotonic', return_value=100), patch('flash_diagnostics.time.sleep'):
+            self.assertEqual(read_exact(connection, 2, 115, diag), b'\x46\xb9')
+        self.assertEqual(connection.timeout, 0.25)
+
+    def test_empty_read_cannot_extend_response_deadline(self):
+        diag = FlashDiagnostics(lambda *a, **k: None)
+        connection = SimpleNamespace(timeout=0.25, read=lambda n: b'')
+        with patch('flash_diagnostics.time.monotonic', side_effect=[100, 101, 115]), patch('flash_diagnostics.time.sleep'):
+            with self.assertRaisesRegex(serial.SerialTimeoutException, 'deadline exceeded'):
+                read_exact(connection, 1, 115, diag)
+
+    def test_closed_port_does_not_wait_for_deadline(self):
+        diag = FlashDiagnostics(lambda *a, **k: None)
+        connection = SimpleNamespace(timeout=0.25, is_open=False, read=lambda n: b'')
+        with patch('flash_diagnostics.time.monotonic', return_value=100):
+            with self.assertRaises(serial.SerialException):
+                read_exact(connection, 1, 115, diag)
 
     def test_phase_limits_and_firmware_not_logged(self):
         events = []
@@ -37,7 +59,8 @@ class FlashDiagnosticTests(unittest.TestCase):
         connection = SimpleNamespace(timeout=0)
         for phase, limit in [('handshake', 15), ('erase', 45), ('write', 5), ('finish', 5)]:
             diag.enter(phase, connection)
-            self.assertEqual(connection.timeout, limit)
+            self.assertEqual(diag.timeout, limit)
+            self.assertEqual(connection.timeout, 0.25)
         before = len(events)
         diag.control('TX', b'private-firmware')
         self.assertEqual(len(events), before)
